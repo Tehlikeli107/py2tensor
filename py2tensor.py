@@ -184,22 +184,76 @@ class TensorTransformer(ast.NodeTransformer):
         )
 
     def visit_Call(self, node):
-        """Convert built-in functions to torch equivalents."""
+        """Convert built-in and math/numpy functions to torch equivalents."""
         self.generic_visit(node)
 
+        # Built-in functions
         if isinstance(node.func, ast.Name):
             name = node.func.id
             torch_map = {
                 'abs': 'abs', 'max': 'max', 'min': 'min',
-                'sum': 'sum', 'round': 'round',
+                'sum': 'sum', 'round': 'round', 'pow': 'pow',
+                'float': None, 'int': None,
             }
             if name in torch_map:
+                if torch_map[name] is None:
+                    return node.args[0] if node.args else node
                 return ast.Call(
                     func=ast.Attribute(
                         value=ast.Name(id='torch', ctx=ast.Load()),
                         attr=torch_map[name], ctx=ast.Load()),
                     args=node.args, keywords=[]
                 )
+
+        # math.X and np.X -> torch.X
+        if isinstance(node.func, ast.Attribute):
+            obj = node.func.value
+            attr = node.func.attr
+            if isinstance(obj, ast.Name) and obj.id in ('math', 'np', 'numpy'):
+                math_torch_map = {
+                    'sqrt': 'sqrt', 'exp': 'exp', 'log': 'log', 'log2': 'log2',
+                    'log10': 'log10', 'sin': 'sin', 'cos': 'cos', 'tan': 'tan',
+                    'asin': 'asin', 'acos': 'acos', 'atan': 'atan', 'atan2': 'atan2',
+                    'sinh': 'sinh', 'cosh': 'cosh', 'tanh': 'tanh',
+                    'floor': 'floor', 'ceil': 'ceil', 'abs': 'abs',
+                    'fabs': 'abs', 'pow': 'pow', 'maximum': 'maximum',
+                    'minimum': 'minimum', 'clip': 'clamp', 'sign': 'sign',
+                    'square': 'square',
+                }
+                if attr in math_torch_map:
+                    # Wrap non-Name args in torch.as_tensor() to handle constants
+                    new_args = []
+                    for a in node.args:
+                        if isinstance(a, ast.Name):
+                            new_args.append(a)  # already a tensor variable
+                        else:
+                            # Wrap in torch.as_tensor() for safety
+                            new_args.append(ast.Call(
+                                func=ast.Attribute(
+                                    value=ast.Name(id='torch', ctx=ast.Load()),
+                                    attr='as_tensor', ctx=ast.Load()),
+                                args=[a], keywords=[]
+                            ))
+                    return ast.Call(
+                        func=ast.Attribute(
+                            value=ast.Name(id='torch', ctx=ast.Load()),
+                            attr=math_torch_map[attr], ctx=ast.Load()),
+                        args=new_args, keywords=node.keywords
+                    )
+
+        return node
+
+    def visit_Attribute(self, node):
+        """Convert math.pi, math.e etc. to torch constants."""
+        self.generic_visit(node)
+        if isinstance(node.value, ast.Name) and node.value.id in ('math', 'np', 'numpy'):
+            const_map = {
+                'pi': 3.141592653589793,
+                'e': 2.718281828459045,
+                'inf': float('inf'),
+            }
+            if node.attr in const_map:
+                return ast.Constant(value=const_map[node.attr])
         return node
 
     def visit_For(self, node):
