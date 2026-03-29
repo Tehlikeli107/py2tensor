@@ -155,14 +155,25 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
         def wrapper(*args, **kwargs):
             has_tensor = any(isinstance(a, torch.Tensor) for a in args)
             has_numpy = any(hasattr(a, '__array__') and not isinstance(a, torch.Tensor) for a in args)
+            # Pandas Series support
+            has_pandas = False
+            try:
+                import pandas as pd
+                has_pandas = any(isinstance(a, pd.Series) for a in args)
+            except ImportError:
+                pass
 
-            if has_tensor or has_numpy:
+            if has_tensor or has_numpy or has_pandas:
                 # Convert numpy arrays to tensors
                 converted = []
                 target_dtype = dtype or torch.float32
                 for a in args:
                     if isinstance(a, torch.Tensor):
                         converted.append(a.to(dtype=target_dtype) if dtype else a.float())
+                    elif hasattr(a, 'values') and hasattr(a, 'index'):
+                        # Pandas Series
+                        _dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        converted.append(torch.tensor(a.values, dtype=target_dtype, device=_dev))
                     elif hasattr(a, '__array__'):
                         _dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
                         converted.append(torch.tensor(a, dtype=target_dtype, device=_dev))
