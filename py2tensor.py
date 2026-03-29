@@ -166,6 +166,16 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
     def decorator(fn):
         # Backend routing
         effective_backend = backend
+        if effective_backend == "pure":
+            try:
+                from pure_model import build_pure_model
+                mod = build_pure_model(fn)
+                if compile:
+                    mod = torch.compile(mod)
+                return mod
+            except ImportError:
+                pass
+
         if effective_backend == "model":
             try:
                 from model_backend import tensorize_model
