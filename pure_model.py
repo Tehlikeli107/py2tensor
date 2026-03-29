@@ -109,6 +109,8 @@ class PureTensorGen:
                 if n not in order: order.append(n)
             elif isinstance(s, ast.Return):
                 body_ret = self._expr(s.value)
+            elif isinstance(s, ast.If):
+                body_ret = self._if_expr(s)
 
         for s in node.orelse:
             if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
@@ -118,8 +120,7 @@ class PureTensorGen:
             elif isinstance(s, ast.Return):
                 else_ret = self._expr(s.value)
             elif isinstance(s, ast.If):
-                inner = self._if_expr(s)
-                if inner: else_ret = inner
+                else_ret = self._if_expr(s)
 
         p = self.params[0] if self.params else 'x'
         def _w(val):
