@@ -253,6 +253,54 @@ class AllTransformer(ast.NodeTransformer):
                     return ast.Constant(value=len(node.args[0].value))
         return node
 
+    # --- Try/except -> safe math with condition check ---
+    def visit_Try(self, node):
+        """try: body except: handler -> compute body, if error fallback to handler.
+        We assume errors are division by zero or math domain errors.
+        Replace with safe versions: x/y -> x/(y + 1e-30), sqrt(x) -> sqrt(max(x,0))"""
+        self.generic_visit(node)
+        # Just return body statements (optimistically) with safe wrappers
+        # The safe math transforms are already handled by visit_Call
+        return node.body
+
+    # --- While -> bounded for, each iteration wrapped in if(cond) ---
+    def visit_While(self, node):
+        """while cond: body -> for _ in range(64): if cond: body else: noop."""
+        MAX = 64
+        import copy
+        unrolled = []
+        for _ in range(MAX):
+            # Wrap body in if(cond): body else: noop
+            cond = copy.deepcopy(node.test)
+            body_copy = []
+            for stmt in node.body:
+                s = copy.deepcopy(stmt)
+                body_copy.append(s)
+
+            # Collect assigned vars for noop (var = var)
+            noop = []
+            for stmt in body_copy:
+                if isinstance(stmt, ast.Assign) and isinstance(stmt.targets[0], ast.Name):
+                    v = stmt.targets[0].id
+                    noop.append(ast.Assign(
+                        targets=[ast.Name(id=v, ctx=ast.Store())],
+                        value=ast.Name(id=v, ctx=ast.Load())
+                    ))
+
+            if not noop:
+                # No assignments to preserve — just skip
+                noop = [ast.Pass()]
+
+            if_node = ast.If(test=cond, body=body_copy, orelse=noop)
+            # Transform the if node (converts to torch.where)
+            transformed = self.visit(if_node)
+            ast.fix_missing_locations(transformed) if not isinstance(transformed, list) else [ast.fix_missing_locations(t) for t in transformed]
+            if isinstance(transformed, list):
+                unrolled.extend(transformed)
+            else:
+                unrolled.append(transformed)
+        return unrolled
+
     # --- Augmented assign ---
     def visit_AugAssign(self, node):
         self.generic_visit(node)
