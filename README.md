@@ -1,93 +1,73 @@
-# Py2Tensor
+# Py2Tensor v1.0
 
-**Convert any Python function to a GPU tensor operation. No training. No approximation. Exact.**
+**Convert any Python function to GPU. One decorator. 162x speedup. Exact results.**
 
 ```python
-from py2tensor import tensorize, benchmark
+from py2tensor import tensorize
+import math
 
-@tensorize
-def my_func(x):
-    if x > 0:
-        return x * 2
-    else:
-        return x + 1
+@tensorize(backend="auto")
+def bisection(lo, hi):
+    for i in range(20):
+        mid = (lo + hi) / 2
+        fmid = mid**3 - 2*mid - 5
+        if fmid > 0: hi = mid
+        else: lo = mid
+    return (lo + hi) / 2
 
-# Works on scalars (CPU)
-my_func(5)   # 10
-
-# Works on GPU tensors (10M elements in <2ms)
-x = torch.randn(10_000_000, device='cuda')
-my_func(x)   # all 10M computed in parallel
-
-# One-line benchmark
-benchmark(my_func, 1.0)
-# CPU: 10M/s, GPU: 4000M/s, Speedup: 400x
+# Solve 10M equations simultaneously
+lo = torch.ones(10_000_000, device='cuda')
+hi = torch.ones(10_000_000, device='cuda') * 3
+roots = bisection(lo, hi)  # 18.3B/s, 162x faster than PyTorch
 ```
 
-## How It Works
+## 3 Backends
 
-Parses the function's AST, transforms each operation to its GPU tensor equivalent:
-- `if/else` -> `torch.where`
-- `x if cond else y` -> `torch.where`
-- `for i in range(N)` -> unrolled N times
-- `math.sin/cos/exp/log/sqrt` -> `torch.*`
-- `abs/min/max` -> `torch.*`
-- `-x` -> `0 - x`
-- `x ** n` -> tensor power
-- `+= -= *=` -> tensor-safe ops
+| Backend | Best For | Speed |
+|---------|----------|-------|
+| `@tensorize` | Compatibility, autograd | 3-6B/s |
+| `@tensorize(compile=True)` | Simple math | 24-36B/s |
+| `@tensorize(backend="triton")` | **Iterative algorithms** | **18-33B/s** |
+| `@tensorize(backend="auto")` | **Auto-selects best** | **Best of both** |
 
-**No neural network. No training. No approximation.**
+## Benchmarks (10M elements, RTX 4070)
 
-## Performance
+| Function | PyTorch | compile | Triton | Triton/PT |
+|----------|---------|---------|--------|-----------|
+| **Bisection 20iter+if** | 0.1B/s | 0.1B/s | **18.3B/s** | **162.5x** |
+| Fixed-point 15iter | 0.4B/s | 0.4B/s | **23.1B/s** | **60.2x** |
+| Newton sqrt 10iter | 0.7B/s | 26.9B/s | 20.6B/s | 29.3x |
+| Decay 20iter | 1.4B/s | 1.4B/s | **24.2B/s** | 17.2x |
+| Multi-input if/else | 3.0B/s | 19.0B/s | **21.5B/s** | 7.2x |
+| Damped oscillator | 5.1B/s | **36.4B/s** | 32.8B/s | 6.4x |
+| Gaussian PDF | 5.6B/s | 25.3B/s | **27.9B/s** | 5.0x |
 
-Tested against hand-written PyTorch on 10M elements — **same speed** (0.97-1.21x ratio):
+**Triton wins 7/11 benchmarks. Average 27.7x over PyTorch ops.**
 
-| Application | GPU Speed | vs Python |
-|-------------|-----------|-----------|
-| Float16 complex fn | **7.15B/s** | - |
-| Gaussian PDF | 5.47B/s | **581x** |
-| Damped oscillator | 4.79B/s | **795x** |
-| Sigmoid | 4.81B/s | **571x** |
-| GELU activation | 2.64B/s | - |
-| Newton sqrt (10 iter) | 663M/s | **353x** |
-| Mandelbrot (32 iter) | 121M/s | **295x** |
-| Black-Scholes 10M | 352M/s | **100x** |
-| Bisection root (30 iter) | 71M/s | - |
+## Why Triton is Faster
+
+```
+PyTorch: for i in range(20): compute(x)
+         = 20 kernel launches, 20 memory round-trips
+
+Triton:  ALL 20 iterations in ONE kernel
+         = 1 launch, data stays in GPU registers
+```
 
 ## Features
 
-### Core
-- `@tensorize` — one decorator, function works on both scalars and GPU tensors
-- `@tensorize(dtype=torch.float16)` — float16 for 2x extra speed
-- `@tensorize(lookup_tables={"table": [values]})` — precomputed tables
-- `@tensorize(fallback=True)` — graceful CPU fallback on errors
-
-### API
-- `explain(fn)` — show the generated GPU code
-- `benchmark(fn, *args)` — auto CPU vs GPU speed comparison
-
-### Supported Python
-- Arithmetic, comparisons, power
-- `if/else` (nested, different-variable branches)
-- Ternary expressions (`x if cond else y`)
-- `for range(N)` (unrolled, max 64 iterations)
-- `+= -= *= /=`
-- `math.sin/cos/tan/exp/log/sqrt/tanh/pi/e`
-- `abs/min/max/sum/round`
-- `and/or` (bitwise tensor)
-- Numpy array input (auto-conversion)
-- Multiple inputs `f(x, y, z)`
-
-### Works With
-- NumPy arrays (auto-converted)
-- PyTorch tensors (native)
-- Python scalars (passthrough to original)
-
-## Real-World Demos
-
-Included: Black-Scholes option pricing, Mandelbrot set, Monte Carlo Pi,
-Newton's method, bisection root finding, PID controller, Taylor series,
-GELU activation, damped oscillator, credit scoring, dynamic pricing.
+- **if/else** -> `torch.where` / `tl.where` (nested, multi-variable)
+- **for range(N)** -> unrolled in single kernel (up to 64 iter)
+- **if/else INSIDE for-loop** -> fused conditional iteration
+- **math.sin/cos/exp/log/sqrt/tanh/pi** -> GPU equivalents
+- **Ternary** `x if cond else y` -> `where`
+- **+=, -=, *=** -> tensor-safe ops
+- **Multiple return values** (tuples)
+- **Autograd** -> compute gradients, optimize any function
+- **NumPy/Pandas input** -> auto-converted to GPU
+- **float16** -> 2x extra speed
+- **explain(fn)** -> show generated code
+- **benchmark(fn, args)** -> auto CPU vs GPU comparison
 
 ## Install
 
@@ -97,10 +77,37 @@ cd py2tensor
 pip install -e .
 ```
 
+## Quick Start
+
+```python
+from py2tensor import tensorize, explain, benchmark
+
+# Simple: just add decorator
+@tensorize
+def f(x):
+    if x > 0: return math.sin(x)
+    else: return 0
+
+# See generated code
+explain(f)
+
+# Auto benchmark
+benchmark(f, 1.0)
+
+# For iterative algorithms: use auto or triton
+@tensorize(backend="auto")
+def newton(x):
+    g = x / 2
+    for i in range(10):
+        g = (g + x / g) / 2
+    return g
+```
+
 ## Tests
 
 ```bash
-python run_all_tests.py  # 42 tests, <30s
+python run_all_tests.py  # 52+ tests
+python bench_final.py    # Full 3-backend benchmark
 ```
 
 ## License
