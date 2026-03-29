@@ -83,35 +83,42 @@ class TritonCodeGen:
 
     def visit_if(self, node):
         cond = self.visit_expr(node.test)
-        # Return in both branches
-        if (len(node.body) == 1 and len(node.orelse) == 1 and
-            isinstance(node.body[0], ast.Return) and isinstance(node.orelse[0], ast.Return)):
-            return f"result = tl.where({cond}, {self.visit_expr(node.body[0].value)}, {self.visit_expr(node.orelse[0].value)})"
-
-        # Collect all assignments from both branches
         lines = []
         body_map = {}
         else_map = {}
+        body_order = []
+        body_return = None
+        else_return = None
+
         for s in node.body:
             if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
-                body_map[s.targets[0].id] = self.visit_expr(s.value)
+                name = s.targets[0].id
+                body_map[name] = self.visit_expr(s.value)
+                if name not in body_order: body_order.append(name)
             elif isinstance(s, ast.Return):
-                body_map['result'] = self.visit_expr(s.value)
+                body_return = self.visit_expr(s.value)
+
         for s in node.orelse:
             if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
-                else_map[s.targets[0].id] = self.visit_expr(s.value)
+                name = s.targets[0].id
+                else_map[name] = self.visit_expr(s.value)
+                if name not in body_order: body_order.append(name)
             elif isinstance(s, ast.Return):
-                else_map['result'] = self.visit_expr(s.value)
+                else_return = self.visit_expr(s.value)
             elif isinstance(s, ast.If):
-                # Nested if — recursive
-                inner = self.visit_if(s)
-                lines.append(inner)
+                lines.append(self.visit_if(s))
 
-        for var in set(body_map) | set(else_map):
-            tv = body_map.get(var, var)
-            fv = else_map.get(var, var)
+        for var in body_order:
+            tv = body_map.get(var, '0.0')
+            fv = else_map.get(var, '0.0')
             lines.append(f"{var} = tl.where({cond}, {tv}, {fv})")
-        return '\n    '.join(lines)
+
+        if body_return is not None and else_return is not None:
+            lines.append(f"result = tl.where({cond}, {body_return}, {else_return})")
+        elif body_return is not None:
+            lines.append(f"result = tl.where({cond}, {body_return}, result)")
+
+        return '\n'.join(lines)
 
     def visit_expr(self, node):
         if isinstance(node, ast.Constant):

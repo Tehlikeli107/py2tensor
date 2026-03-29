@@ -518,10 +518,21 @@ class TensorTransformer(ast.NodeTransformer):
             )
         return node
 
-    def visit_Return(self, node):
-        """Handle return statements - especially tuples (multiple returns)."""
+    def visit_Compare(self, node):
+        """Handle chained comparisons: 0 < x < 10 -> (0 < x) & (x < 10)"""
         self.generic_visit(node)
-        # Tuple returns are already handled by Python's AST
+        if len(node.ops) > 1:
+            # Chained: a < b < c -> (a < b) & (b < c)
+            parts = []
+            left = node.left
+            for op, comp in zip(node.ops, node.comparators):
+                parts.append(ast.Compare(left=left, ops=[op], comparators=[comp]))
+                left = comp
+            # Combine with bitwise AND
+            result = parts[0]
+            for p in parts[1:]:
+                result = ast.BinOp(left=result, op=ast.BitAnd(), right=p)
+            return result
         return node
 
     def visit_IfExp(self, node):
