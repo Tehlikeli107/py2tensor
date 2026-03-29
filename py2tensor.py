@@ -366,6 +366,39 @@ class TensorTransformer(ast.NodeTransformer):
         # Built-in functions
         if isinstance(node.func, ast.Name):
             name = node.func.id
+
+            # min/max with 2 args -> torch.minimum/maximum
+            if name in ('min', 'max') and len(node.args) == 2:
+                attr = 'minimum' if name == 'min' else 'maximum'
+                # Wrap ALL non-Name args in torch.as_tensor for safety
+                new_args = []
+                for a in node.args:
+                    if isinstance(a, ast.Name):
+                        new_args.append(a)
+                    elif isinstance(a, ast.Constant):
+                        new_args.append(ast.Call(
+                            func=ast.Attribute(value=ast.Name(id='torch', ctx=ast.Load()),
+                                               attr='as_tensor', ctx=ast.Load()),
+                            args=[a], keywords=[]))
+                    elif isinstance(a, ast.UnaryOp) and isinstance(a.op, ast.USub):
+                        new_args.append(ast.Call(
+                            func=ast.Attribute(value=ast.Name(id='torch', ctx=ast.Load()),
+                                               attr='as_tensor', ctx=ast.Load()),
+                            args=[a], keywords=[]))
+                    else:
+                        # Wrap any non-Name, non-Call expr in as_tensor for safety
+                        if isinstance(a, (ast.BinOp, ast.BoolOp)):
+                            new_args.append(ast.Call(
+                                func=ast.Attribute(value=ast.Name(id='torch', ctx=ast.Load()),
+                                                   attr='as_tensor', ctx=ast.Load()),
+                                args=[a], keywords=[]))
+                        else:
+                            new_args.append(a)
+                return ast.Call(
+                    func=ast.Attribute(value=ast.Name(id='torch', ctx=ast.Load()),
+                                       attr=attr, ctx=ast.Load()),
+                    args=new_args, keywords=[])
+
             torch_map = {
                 'abs': 'abs', 'max': 'max', 'min': 'min',
                 'sum': 'sum', 'round': 'round', 'pow': 'pow',
@@ -472,16 +505,21 @@ class TensorTransformer(ast.NodeTransformer):
         return node
 
     def visit_While(self, node):
-        """Convert while loop to bounded for loop (max 64 iterations).
-        while cond: body -> for _ in range(64): if cond: body"""
+        """Convert while loop to unrolled iterations (max 64).
+        while cond: body -> repeat body 64 times (condition checked via masking)."""
         self.generic_visit(node)
         MAX_ITER = 64
-        # Unroll as: for _ in range(MAX_ITER): body (with break simulated via masking)
+        import copy
         unrolled = []
         for _ in range(MAX_ITER):
-            # Add condition check: if not cond, all subsequent ops are masked
             for stmt in node.body:
-                unrolled.append(stmt)
+                new_stmt = copy.deepcopy(stmt)
+                new_stmt = self.visit(new_stmt)
+                ast.fix_missing_locations(new_stmt)
+                if isinstance(new_stmt, list):
+                    unrolled.extend(new_stmt)
+                else:
+                    unrolled.append(new_stmt)
         return unrolled
 
     def visit_AugAssign(self, node):
