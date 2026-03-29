@@ -65,25 +65,37 @@ def compress(model_fn, input_range, n_samples=100000, rank=32, n_features=1):
         y = y[0]
     y = y.float()
 
-    # Step 2: Build feature matrix (polynomial basis)
-    # phi(x) = [1, x, x^2, x^3, ..., sin(x), cos(x), exp(-x^2)]
+    # Step 2: Build feature matrix (rich basis: polynomial + RBF + step)
     features = [torch.ones(n_samples, device=device)]  # bias
     for i in range(n_features):
         xi = X[:, i]
+        # Polynomial
         features.append(xi)
         features.append(xi * xi)
         features.append(xi * xi * xi)
+        # Trig (smooth)
         features.append(torch.sin(xi))
         features.append(torch.cos(xi))
         features.append(torch.sin(2 * xi))
         features.append(torch.cos(2 * xi))
         features.append(torch.exp(-xi * xi * 0.1))
+        # RBF centers (captures step functions!)
+        if isinstance(input_range, list):
+            lo, hi = input_range[i]
+        else:
+            lo, hi = input_range
+        n_rbf = min(rank, 32)
+        centers = torch.linspace(lo, hi, n_rbf, device=device)
+        width = (hi - lo) / n_rbf * 2
+        for c in centers:
+            features.append(torch.sigmoid((xi - c) / (width * 0.1 + 1e-8)))  # step-like
 
-    # Cross features for multi-input
+    # Cross features
     if n_features >= 2:
         for i in range(min(n_features, 4)):
             for j in range(i+1, min(n_features, 4)):
                 features.append(X[:, i] * X[:, j])
+                features.append(torch.abs(X[:, i] - X[:, j]))
 
     Phi = torch.stack(features, dim=1)  # (n_samples, n_basis)
     n_basis = Phi.shape[1]
@@ -103,7 +115,8 @@ def compress(model_fn, input_range, n_samples=100000, rank=32, n_features=1):
     w = Vh_k.t() @ torch.diag(1.0 / S_k) @ U_k.t() @ y  # (n_basis,)
 
     # Step 4: Build compressed model
-    compressed = CompressedModel(w, n_features, input_range)
+    n_rbf = min(rank, 32)
+    compressed = CompressedModel(w, n_features, input_range, n_rbf=n_rbf)
 
     # Evaluate accuracy
     y_pred = compressed(X)
@@ -121,13 +134,14 @@ def compress(model_fn, input_range, n_samples=100000, rank=32, n_features=1):
 
 
 class CompressedModel(nn.Module):
-    """Tiny model: polynomial basis @ weight vector."""
+    """Tiny model: rich basis @ weight vector."""
 
-    def __init__(self, weights, n_features, input_range):
+    def __init__(self, weights, n_features, input_range, n_rbf=32):
         super().__init__()
         self.register_buffer('w', weights)
         self.n_features = n_features
         self.input_range = input_range
+        self.n_rbf = n_rbf
 
     def _build_features(self, X):
         if X.dim() == 1:
@@ -135,15 +149,25 @@ class CompressedModel(nn.Module):
         n = X.shape[0]
         features = [torch.ones(n, device=X.device)]
         for i in range(self.n_features):
-            xi = X[:, i] if X.dim() > 1 else X
+            xi = X[:, i]
             features.extend([xi, xi*xi, xi*xi*xi,
                            torch.sin(xi), torch.cos(xi),
                            torch.sin(2*xi), torch.cos(2*xi),
                            torch.exp(-xi*xi*0.1)])
+            # RBF sigmoid basis
+            if isinstance(self.input_range, list):
+                lo, hi = self.input_range[i]
+            else:
+                lo, hi = self.input_range
+            centers = torch.linspace(lo, hi, self.n_rbf, device=X.device)
+            width = (hi - lo) / self.n_rbf * 2
+            for c in centers:
+                features.append(torch.sigmoid((xi - c) / (width * 0.1 + 1e-8)))
         if self.n_features >= 2:
             for i in range(min(self.n_features, 4)):
                 for j in range(i+1, min(self.n_features, 4)):
                     features.append(X[:, i] * X[:, j])
+                    features.append(torch.abs(X[:, i] - X[:, j]))
         return torch.stack(features, dim=1)
 
     def forward(self, *args):
@@ -223,7 +247,7 @@ if __name__ == '__main__':
                     else:
                         return income * 0.10
 
-    compressed2 = compress(tax, (0, 1000000), n_samples=50000, rank=32)
+    compressed2 = compress(tax, (0, 1000000), n_samples=100000, rank=64)
     compressed2 = compressed2.to(device)
 
     incomes = torch.tensor([10000, 50000, 100000, 300000, 700000], dtype=torch.float32, device=device)
@@ -247,7 +271,7 @@ if __name__ == '__main__':
     compressed3 = compress(
         insurance,
         input_range=[(20, 80), (18, 45)],
-        n_samples=50000, rank=16, n_features=2
+        n_samples=100000, rank=64, n_features=2
     )
     compressed3 = compressed3.to(device)
 
