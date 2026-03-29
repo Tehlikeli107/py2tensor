@@ -15,20 +15,41 @@ device = torch.device("cuda")
 def detect_kinks(fn, lo, hi, n_probe=50000):
     x = torch.linspace(lo, hi, n_probe, device=device)
     y = fn(x)
-    dy = torch.diff(y) / torch.diff(x)
+    # Method 1: derivative change
+    dy = torch.diff(y)
     ddy = torch.diff(dy)
-    threshold = ddy.abs().median() * 20
-    kink_mask = ddy.abs() > threshold
+
+    # Method 2: value jumps (for step functions)
+    jumps = dy.abs()
+
+    # Combine: detect both smooth kinks and sharp jumps
+    sorted_ddy = ddy.abs().sort().values
+    ddy_thresh = sorted_ddy[int(len(sorted_ddy) * 0.95)] * 3
+    if ddy_thresh < 1e-10:
+        ddy_thresh = ddy.abs().max() * 0.1
+
+    sorted_jumps = jumps.sort().values
+    jump_thresh = sorted_jumps[int(len(sorted_jumps) * 0.95)] * 3
+    if jump_thresh < 1e-10:
+        jump_thresh = jumps.max() * 0.1
+
+    kink_mask_ddy = ddy.abs() > ddy_thresh
+    kink_mask_jump = jumps[:-1].abs() > jump_thresh
+    # Pad to same size
+    min_len = min(len(kink_mask_ddy), len(kink_mask_jump))
+    kink_mask = kink_mask_ddy[:min_len] | kink_mask_jump[:min_len]
     kink_idx = torch.where(kink_mask)[0]
 
-    # Merge nearby kinks
     if len(kink_idx) == 0:
         return torch.tensor([lo, hi], device=device)
-    merged = [kink_idx[0]]
-    min_gap = n_probe // 100
+
+    # Merge nearby kinks
+    merged = [kink_idx[0].item()]
+    min_gap = n_probe // 200
     for idx in kink_idx[1:]:
-        if idx - merged[-1] > min_gap:
-            merged.append(idx)
+        if idx.item() - merged[-1] > min_gap:
+            merged.append(idx.item())
+
     kink_x = x[1:-1][torch.tensor(merged, device=device)]
 
     # Add boundaries
@@ -47,10 +68,15 @@ def piecewise_compress(fn, lo, hi):
 
     for i in range(n_segments):
         x1, x2 = breakpoints[i], breakpoints[i+1]
-        y1 = fn(x1.unsqueeze(0)).squeeze()
-        y2 = fn(x2.unsqueeze(0)).squeeze()
-        slope = (y2 - y1) / (x2 - x1 + 1e-10)
-        intercept = y1 - slope * x1
+        # Sample mid-segment for better fit (avoid exact breakpoint values)
+        x_mid = (x1 + x2) / 2
+        x_q1 = x1 + (x2 - x1) * 0.25
+        x_q3 = x1 + (x2 - x1) * 0.75
+        y1 = fn(x_q1.unsqueeze(0)).float().squeeze()
+        y2 = fn(x_q3.unsqueeze(0)).float().squeeze()
+        slope = (y2 - y1) / (x_q3 - x_q1 + 1e-10)
+        y_mid = fn(x_mid.unsqueeze(0)).float().squeeze()
+        intercept = y_mid - slope * x_mid
         slopes[i] = slope
         intercepts[i] = intercept
 
@@ -58,8 +84,8 @@ def piecewise_compress(fn, lo, hi):
 
     # Verify
     x_test = torch.linspace(lo, hi, 10000, device=device)
-    y_orig = fn(x_test)
-    y_comp = model(x_test)
+    y_orig = fn(x_test).float()
+    y_comp = model(x_test).float()
     mae = (y_orig - y_comp).abs().mean().item()
     max_err = (y_orig - y_comp).abs().max().item()
     r2 = 1 - ((y_orig - y_comp)**2).sum().item() / ((y_orig - y_orig.mean())**2).sum().item()
@@ -175,12 +201,17 @@ if __name__ == '__main__':
                         return 1
 
     print(f"\n[2] Credit scoring (5 tiers)")
-    model2 = piecewise_compress(credit, 300, 850)
-    model2 = model2.to(device)
-
-    test_scores = torch.tensor([450, 550, 650, 750, 820], dtype=torch.float32, device=device)
-    print(f"  Original:   {credit(test_scores).tolist()}")
-    print(f"  Compressed: {[f'{v:.1f}' for v in model2(test_scores).tolist()]}")
+    try:
+        model2 = piecewise_compress(credit, 300, 850)
+        model2 = model2.to(device)
+        test_scores = torch.tensor([450, 550, 650, 750, 820], dtype=torch.float32, device=device)
+        orig2 = credit(test_scores)
+        comp2 = model2(test_scores)
+        print(f"  Original:   {orig2.tolist()}")
+        print(f"  Compressed: {[f'{v:.1f}' for v in comp2.tolist()]}")
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
 
     # Insurance
     @gpu
