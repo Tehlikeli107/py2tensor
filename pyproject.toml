@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "py2tensor"
-version = "0.14.0"
+version = "2.0.0"
 description = "Convert any Python function to GPU tensor operation. No training, exact results, 8000x speedup."
 readme = "README.md"
 license = {text = "MIT"}
