@@ -9,6 +9,9 @@ test_files = [
     "tests_math.py",
     "tests_structures.py",
     "tests_ternary.py",
+    "tests_numpy_dtype.py",
+    "tests_advanced2.py",
+    "tests_multiblock.py",
 ]
 
 print("=" * 60)
