@@ -27,12 +27,83 @@ import time
 
 def explain(fn):
     """Show the generated GPU tensor code for a @tensorize'd function."""
-    if hasattr(fn, '_tensor_source'):
-        print(f"Original: {fn.__name__}")
-        print(f"Generated GPU code:")
+    if hasattr(fn, '_triton_source'):
+        print(f"Original: {fn.__name__} [Triton backend]")
+        print(fn._triton_source)
+    elif hasattr(fn, '_tensor_source'):
+        print(f"Original: {fn.__name__} [PyTorch backend]")
         print(fn._tensor_source)
+    elif hasattr(fn, 'operations'):
+        print(f"Original: {fn.__name__} [Model backend]")
+        print(f"  Operations: {len(fn.operations)}")
+        for i, op in enumerate(fn.operations):
+            print(f"    [{i}] {op[0]}: {op[1:]}")
     else:
         print(f"{fn.__name__} is not tensorized. Use @tensorize first.")
+
+
+def profile(fn, *args, n=1000):
+    """Profile a @tensorize'd function: show CPU vs GPU timing breakdown."""
+    import time as _time
+
+    if not hasattr(fn, '_original'):
+        print("Not tensorized.")
+        return
+
+    # CPU timing
+    scalar_args = []
+    for a in args:
+        if isinstance(a, torch.Tensor):
+            scalar_args.append(float(a.flatten()[0]))
+        elif isinstance(a, (int, float)):
+            scalar_args.append(float(a))
+        else:
+            scalar_args.append(a)
+
+    cpu_n = max(n, 100000)
+    t0 = _time.time()
+    for _ in range(cpu_n):
+        fn._original(*scalar_args)
+    cpu_time = (_time.time() - t0) / cpu_n
+
+    # GPU timing
+    gpu_args = []
+    for a in args:
+        if isinstance(a, torch.Tensor):
+            gpu_args.append(a)
+        elif isinstance(a, (int, float)):
+            gpu_args.append(torch.full((10000,), float(a), device='cuda'))
+        else:
+            gpu_args.append(a)
+
+    torch.cuda.synchronize()
+    for _ in range(3): fn(*gpu_args)
+    torch.cuda.synchronize()
+    t0 = _time.time()
+    for _ in range(100):
+        fn(*gpu_args)
+    torch.cuda.synchronize()
+    gpu_time = (_time.time() - t0) / 100
+
+    speedup = cpu_time * 10000 / max(gpu_time, 1e-12)
+
+    print(f"Profile: {fn.__name__}")
+    print(f"  CPU (1 elem):  {cpu_time*1e6:.1f} us")
+    print(f"  GPU (10K elem): {gpu_time*1e3:.3f} ms")
+    print(f"  Effective speedup at 10K: {speedup:.0f}x")
+
+    if hasattr(fn, '_tensor_source'):
+        src = fn._tensor_source
+        n_where = src.count('torch.where')
+        n_ops = src.count('torch.')
+        print(f"  Tensor ops: {n_ops} total, {n_where} where()")
+    if hasattr(fn, '_triton_source'):
+        src = fn._triton_source
+        n_where = src.count('tl.where')
+        n_ops = src.count('tl.')
+        print(f"  Triton ops: {n_ops} total, {n_where} where()")
+
+    return {"cpu_us": cpu_time*1e6, "gpu_ms": gpu_time*1e3, "speedup": speedup}
 
 
 def benchmark(fn, *sample_args, n=10_000_000, rounds=10):
