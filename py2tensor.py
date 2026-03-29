@@ -98,7 +98,10 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
         if effective_backend == "model":
             try:
                 from model_backend import tensorize_model
-                return tensorize_model(fn)
+                mod = tensorize_model(fn)
+                if compile:
+                    mod = torch.compile(mod)
+                return mod
             except ImportError:
                 pass
 
