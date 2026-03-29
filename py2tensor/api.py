@@ -74,7 +74,40 @@ class GPU:
     @staticmethod
     def auto(fn):
         """@gpu.auto -> selects best backend based on function analysis."""
-        return tensorize(fn, backend="auto")
+        from .diagnostics import FunctionAnalyzer
+        import ast, inspect, textwrap
+
+        source = inspect.getsource(fn)
+        source = textwrap.dedent(source)
+        clean = []
+        skip = True
+        for line in source.split('\n'):
+            if skip and (line.strip().startswith('@') or line.strip() == ''):
+                continue
+            skip = False
+            clean.append(line)
+
+        try:
+            tree = ast.parse('\n'.join(clean))
+            analyzer = FunctionAnalyzer()
+            analyzer.visit(tree)
+
+            has_dict = analyzer.has_dict_literal
+            has_list = analyzer.has_list_literal
+            has_try = analyzer.has_try
+            has_loop = analyzer.has_for and analyzer.for_count > 0
+            has_while = analyzer.has_while
+
+            # Route to best backend
+            if has_dict or has_list or has_try or has_while:
+                if tensorize_all:
+                    return tensorize_all(fn)
+            if has_loop:
+                if tensorize_triton:
+                    return tensorize_triton(fn)
+            return tensorize(fn, compile=True)  # default: compile for speed
+        except Exception:
+            return tensorize(fn)  # fallback
 
 
 gpu = GPU()
