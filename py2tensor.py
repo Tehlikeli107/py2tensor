@@ -293,36 +293,60 @@ class TensorTransformer(ast.NodeTransformer):
                 keywords=[]
             ))
 
-        # if/else with assignments in each branch
-        body_assigns = [s for s in node.body if isinstance(s, ast.Assign)]
-        else_assigns = [s for s in node.orelse if isinstance(s, ast.Assign)]
+        # General case: collect assigns and returns from both branches
+        cond = node.test
+        result = []
 
-        if body_assigns and else_assigns and len(node.body) == len(body_assigns) and len(node.orelse) == len(else_assigns):
-            cond = node.test
-            result = []
+        body_vars = {}
+        else_vars = {}
+        body_return = None
+        else_return = None
 
-            # Collect all variable names from both branches
-            body_vars = {}
-            for s in body_assigns:
-                if isinstance(s.targets[0], ast.Name):
-                    body_vars[s.targets[0].id] = s.value
-            else_vars = {}
-            for s in else_assigns:
-                if isinstance(s.targets[0], ast.Name):
-                    else_vars[s.targets[0].id] = s.value
+        for s in node.body:
+            if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
+                body_vars[s.targets[0].id] = s.value
+            elif isinstance(s, ast.Return):
+                body_return = s.value
 
-            all_vars = set(body_vars.keys()) | set(else_vars.keys())
+        for s in node.orelse:
+            if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
+                else_vars[s.targets[0].id] = s.value
+            elif isinstance(s, ast.Return):
+                else_return = s.value
+            elif isinstance(s, ast.If):
+                # Nested if in else — already handled by generic_visit
+                pass
 
-            for var in all_vars:
-                true_val = body_vars.get(var, ast.Name(id=var, ctx=ast.Load()))
-                false_val = else_vars.get(var, ast.Name(id=var, ctx=ast.Load()))
-                result.append(ast.Assign(
-                    targets=[ast.Name(id=var, ctx=ast.Store())],
-                    value=self._make_where(cond, true_val, false_val)
-                ))
+        # Convert assignments to torch.where — preserve body order
+        seen = set()
+        ordered_vars = []
+        for s in node.body:
+            if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
+                v = s.targets[0].id
+                if v not in seen:
+                    ordered_vars.append(v)
+                    seen.add(v)
+        for s in node.orelse:
+            if isinstance(s, ast.Assign) and isinstance(s.targets[0], ast.Name):
+                v = s.targets[0].id
+                if v not in seen:
+                    ordered_vars.append(v)
+                    seen.add(v)
+        for var in ordered_vars:
+            # Default to 0 if variable only exists in one branch
+            true_val = body_vars.get(var, ast.Constant(value=0))
+            false_val = else_vars.get(var, ast.Constant(value=0))
+            result.append(ast.Assign(
+                targets=[ast.Name(id=var, ctx=ast.Store())],
+                value=self._make_where(cond, true_val, false_val)
+            ))
 
-            if result:
-                return result
+        # Convert return if both branches return
+        if body_return is not None and else_return is not None:
+            result.append(ast.Return(value=self._make_where(cond, body_return, else_return)))
+
+        if result:
+            return result
 
         return node
 
