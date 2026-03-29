@@ -82,7 +82,7 @@ def benchmark(fn, *sample_args, n=10_000_000, rounds=10):
     return {"cpu_rate": cpu_rate, "gpu_rate": gpu_rate, "speedup": speedup}
 
 
-def tensorize(fn=None, lookup_tables=None):
+def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True):
     """Decorator: converts scalar Python function to batched GPU tensor function.
 
     Args:
@@ -105,9 +105,29 @@ def tensorize(fn=None, lookup_tables=None):
             clean_lines.append(line)
         source = '\n'.join(clean_lines)
 
-        tree = ast.parse(source)
+        try:
+            tree = ast.parse(source)
+        except SyntaxError as e:
+            if fallback:
+                import warnings
+                warnings.warn(f"py2tensor: parse failed for {fn.__name__}, using CPU fallback: {e}")
+                fn._original = fn
+                fn._tensor_source = "# parse failed"
+                return fn
+            raise
+
         transformer = TensorTransformer()
-        new_tree = transformer.visit(tree)
+        try:
+            new_tree = transformer.visit(tree)
+        except Exception as e:
+            if fallback:
+                import warnings
+                warnings.warn(f"py2tensor: transform failed for {fn.__name__}, using CPU fallback: {e}")
+                fn._original = fn
+                fn._tensor_source = "# transform failed"
+                return fn
+            raise
+
         ast.fix_missing_locations(new_tree)
         new_source = ast.unparse(new_tree)
 
@@ -131,15 +151,42 @@ def tensorize(fn=None, lookup_tables=None):
 
         # Wrapper
         def wrapper(*args, **kwargs):
-            if any(isinstance(a, torch.Tensor) for a in args):
-                # Move lookup tables to same device as input
-                dev = next(a.device for a in args if isinstance(a, torch.Tensor))
-                if lookup_tables:
-                    for k in lookup_tables:
-                        if k in namespace and isinstance(namespace[k], torch.Tensor):
-                            if namespace[k].device != dev:
-                                namespace[k] = namespace[k].to(dev)
-                return gpu_fn(*args, **kwargs)
+            has_tensor = any(isinstance(a, torch.Tensor) for a in args)
+            has_numpy = any(hasattr(a, '__array__') and not isinstance(a, torch.Tensor) for a in args)
+
+            if has_tensor or has_numpy:
+                # Convert numpy arrays to tensors
+                converted = []
+                target_dtype = dtype or torch.float32
+                for a in args:
+                    if isinstance(a, torch.Tensor):
+                        converted.append(a.to(dtype=target_dtype) if dtype else a.float())
+                    elif hasattr(a, '__array__'):
+                        _dev = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                        converted.append(torch.tensor(a, dtype=target_dtype, device=_dev))
+                    elif isinstance(a, (int, float)):
+                        dev = next((c.device for c in converted if isinstance(c, torch.Tensor)), 'cpu')
+                        converted.append(torch.tensor(a, dtype=target_dtype, device=dev))
+                    else:
+                        converted.append(a)
+
+                # Move lookup tables to same device
+                if converted:
+                    dev = next((c.device for c in converted if isinstance(c, torch.Tensor)), 'cpu')
+                    if lookup_tables:
+                        for k in lookup_tables:
+                            if k in namespace and isinstance(namespace[k], torch.Tensor):
+                                if namespace[k].device != dev:
+                                    namespace[k] = namespace[k].to(dev)
+
+                try:
+                    return gpu_fn(*converted, **kwargs)
+                except Exception as e:
+                    if fallback:
+                        # Fallback to CPU scalar
+                        return fn(*args, **kwargs)
+                    raise
+
             return fn(*args, **kwargs)
 
         # Try torch.compile for extra speed
