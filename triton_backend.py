@@ -64,14 +64,21 @@ class TritonCodeGen:
             if stop is not None and abs(stop - start) <= 64:
                 var = node.target.id if isinstance(node.target, ast.Name) else None
                 lines = []
+                import re, copy
                 for i in range(start, stop, step):
                     for stmt in node.body:
-                        code = self.visit_stmt(stmt)
-                        if var and var in code:
-                            import re
-                            code = re.sub(r'\b' + re.escape(var) + r'\b', str(i), code)
+                        # Deep copy to avoid modifying original AST
+                        s = copy.deepcopy(stmt)
+                        # Replace loop var at AST level for correctness
+                        if var:
+                            class _R(ast.NodeTransformer):
+                                def visit_Name(self, n):
+                                    if n.id == var: return ast.Constant(value=i)
+                                    return n
+                            s = _R().visit(s)
+                        code = self.visit_stmt(s)
                         lines.append(code)
-                return '\n'.join(lines)  # no extra indent
+                return '\n'.join(lines)
         return "# unsupported for loop"
 
     def visit_if(self, node):
