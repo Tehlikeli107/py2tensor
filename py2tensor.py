@@ -268,39 +268,36 @@ class TensorTransformer(ast.NodeTransformer):
                 keywords=[]
             ))
 
-        # if/else with single assignment in each branch
-        if (len(node.body) == 1 and len(node.orelse) == 1 and
-            isinstance(node.body[0], ast.Assign) and
-            isinstance(node.orelse[0], ast.Assign)):
+        # if/else with assignments in each branch
+        body_assigns = [s for s in node.body if isinstance(s, ast.Assign)]
+        else_assigns = [s for s in node.orelse if isinstance(s, ast.Assign)]
 
-            t1 = node.body[0].targets[0]
-            t2 = node.orelse[0].targets[0]
+        if body_assigns and else_assigns and len(node.body) == len(body_assigns) and len(node.orelse) == len(else_assigns):
             cond = node.test
+            result = []
 
-            if isinstance(t1, ast.Name) and isinstance(t2, ast.Name):
-                if t1.id == t2.id:
-                    # Same variable: simple torch.where
-                    return ast.Assign(
-                        targets=[ast.Name(id=t1.id, ctx=ast.Store())],
-                        value=self._make_where(cond, node.body[0].value, node.orelse[0].value)
-                    )
-                else:
-                    # Different variables: both need conditional update
-                    # if cond: a = X else: b = Y
-                    # -> a = torch.where(cond, X, a)
-                    #    b = torch.where(cond, b, Y)
-                    return [
-                        ast.Assign(
-                            targets=[ast.Name(id=t1.id, ctx=ast.Store())],
-                            value=self._make_where(cond, node.body[0].value,
-                                                   ast.Name(id=t1.id, ctx=ast.Load()))
-                        ),
-                        ast.Assign(
-                            targets=[ast.Name(id=t2.id, ctx=ast.Store())],
-                            value=self._make_where(cond, ast.Name(id=t2.id, ctx=ast.Load()),
-                                                   node.orelse[0].value)
-                        ),
-                    ]
+            # Collect all variable names from both branches
+            body_vars = {}
+            for s in body_assigns:
+                if isinstance(s.targets[0], ast.Name):
+                    body_vars[s.targets[0].id] = s.value
+            else_vars = {}
+            for s in else_assigns:
+                if isinstance(s.targets[0], ast.Name):
+                    else_vars[s.targets[0].id] = s.value
+
+            all_vars = set(body_vars.keys()) | set(else_vars.keys())
+
+            for var in all_vars:
+                true_val = body_vars.get(var, ast.Name(id=var, ctx=ast.Load()))
+                false_val = else_vars.get(var, ast.Name(id=var, ctx=ast.Load()))
+                result.append(ast.Assign(
+                    targets=[ast.Name(id=var, ctx=ast.Store())],
+                    value=self._make_where(cond, true_val, false_val)
+                ))
+
+            if result:
+                return result
 
         return node
 
