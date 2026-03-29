@@ -29,16 +29,12 @@ print("-" * 60)
 def rsi_signal(price, prev_price):
     """Relative Strength Index signal: simplified"""
     change = price - prev_price
-    # gain = max(change, 0), loss = max(-change, 0)
     if change > 0:
         gain = change
+        loss = 0
     else:
         gain = 0
-    if change < 0:
         loss = -change
-    else:
-        loss = 0
-    # Signal: +1 buy, -1 sell, 0 hold
     ratio = gain / (loss + 0.001)
     if ratio > 2.0:
         return 1
