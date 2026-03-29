@@ -350,6 +350,35 @@ class TensorTransformer(ast.NodeTransformer):
             )
         return node
 
+    def visit_IfExp(self, node):
+        """Ternary: val_true if cond else val_false -> torch.where(cond, true, false)"""
+        self.generic_visit(node)
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id='torch', ctx=ast.Load()),
+                attr='where', ctx=ast.Load()),
+            args=[node.test, node.body, node.orelse],
+            keywords=[]
+        )
+
+    def visit_UnaryOp(self, node):
+        """Convert unary ops: -x, not x"""
+        self.generic_visit(node)
+        if isinstance(node.op, ast.USub):
+            return ast.BinOp(
+                left=ast.Constant(value=0),
+                op=ast.Sub(),
+                right=node.operand
+            )
+        if isinstance(node.op, ast.Not):
+            # not x -> 1 - x (for boolean tensors)
+            return ast.BinOp(
+                left=ast.Constant(value=1),
+                op=ast.Sub(),
+                right=node.operand
+            )
+        return node
+
     def visit_BoolOp(self, node):
         """and/or -> tensor bitwise operations."""
         self.generic_visit(node)
