@@ -522,17 +522,66 @@ class TensorTransformer(ast.NodeTransformer):
         """Handle chained comparisons: 0 < x < 10 -> (0 < x) & (x < 10)"""
         self.generic_visit(node)
         if len(node.ops) > 1:
-            # Chained: a < b < c -> (a < b) & (b < c)
             parts = []
             left = node.left
             for op, comp in zip(node.ops, node.comparators):
                 parts.append(ast.Compare(left=left, ops=[op], comparators=[comp]))
                 left = comp
-            # Combine with bitwise AND
             result = parts[0]
             for p in parts[1:]:
                 result = ast.BinOp(left=result, op=ast.BitAnd(), right=p)
             return result
+        return node
+
+    def visit_FunctionDef(self, node):
+        """Handle early return pattern: if cond: return X ... rest -> where + rest"""
+        # First transform children
+        self.generic_visit(node)
+
+        # Look for "if cond: return X" without else (early return)
+        new_body = []
+        i = 0
+        while i < len(node.body):
+            stmt = node.body[i]
+            if (isinstance(stmt, ast.If) and not stmt.orelse and
+                len(stmt.body) == 1 and isinstance(stmt.body[0], ast.Return)):
+                # Early return: if cond: return val
+                # Convert to: _early_mask = cond; _early_val = val
+                # Then wrap remaining code in ~mask
+                cond = stmt.test
+                early_val = stmt.body[0].value
+
+                # Find the final return in remaining body
+                remaining = node.body[i+1:]
+                final_return = None
+                for r in remaining:
+                    if isinstance(r, ast.Return):
+                        final_return = r.value
+                        break
+
+                if final_return is not None:
+                    # Replace early return + rest + final return with single where
+                    # First, add remaining non-return stmts
+                    for r in remaining:
+                        if not isinstance(r, ast.Return):
+                            new_body.append(r)
+                    # Then add combined return
+                    new_body.append(ast.Return(
+                        value=self._make_where(cond, early_val, final_return)
+                    ))
+                    break  # consumed all remaining
+                else:
+                    new_body.append(stmt)
+            else:
+                s = stmt
+                if isinstance(s, list):
+                    new_body.extend(s)
+                else:
+                    new_body.append(s)
+            i += 1
+
+        if new_body:
+            node.body = new_body
         return node
 
     def visit_IfExp(self, node):
