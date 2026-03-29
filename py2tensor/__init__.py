@@ -13,6 +13,7 @@ Usage:
     f(torch.randn(10_000_000, device='cuda'))  # 10M in <1ms
 """
 from .core import tensorize, explain, benchmark, profile
+from .diagnostics import diagnose
 
 try:
     from .triton import tensorize_triton
@@ -33,4 +34,4 @@ from .api import gpu
 
 __version__ = "2.0.0"
 __all__ = ["gpu", "tensorize", "tensorize_triton", "build_pure_model",
-           "tensorize_all", "explain", "benchmark", "profile"]
+           "tensorize_all", "explain", "benchmark", "profile", "diagnose"]
