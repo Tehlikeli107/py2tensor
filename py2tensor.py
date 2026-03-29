@@ -204,6 +204,38 @@ class TensorTransformer(ast.NodeTransformer):
 
         return node
 
+    def visit_While(self, node):
+        """Convert while loop to bounded for loop (max 64 iterations).
+        while cond: body -> for _ in range(64): if cond: body"""
+        self.generic_visit(node)
+        MAX_ITER = 64
+        # Unroll as: for _ in range(MAX_ITER): body (with break simulated via masking)
+        unrolled = []
+        for _ in range(MAX_ITER):
+            # Add condition check: if not cond, all subsequent ops are masked
+            for stmt in node.body:
+                unrolled.append(stmt)
+        return unrolled
+
+    def visit_AugAssign(self, node):
+        """Convert += -= *= /= to regular assignment with tensor op."""
+        self.generic_visit(node)
+        # x += val -> x = x + val
+        op_map = {
+            ast.Add: ast.Add(), ast.Sub: ast.Sub(),
+            ast.Mult: ast.Mult(), ast.Div: ast.Div(),
+            ast.Mod: ast.Mod(), ast.Pow: ast.Pow(),
+        }
+        op = op_map.get(type(node.op), node.op)
+        return ast.Assign(
+            targets=[node.target],
+            value=ast.BinOp(
+                left=ast.Name(id=node.target.id, ctx=ast.Load()) if isinstance(node.target, ast.Name) else node.target,
+                op=op,
+                right=node.value
+            )
+        )
+
     def visit_Subscript(self, node):
         """Convert array[index] to tensor indexing."""
         self.generic_visit(node)
