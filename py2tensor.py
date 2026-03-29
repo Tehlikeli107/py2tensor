@@ -93,13 +93,19 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
                        These become torch tensors accessible inside the function.
     """
     def decorator(fn):
-        # Auto/Triton backend routing
+        # Backend routing
         effective_backend = backend
+        if effective_backend == "model":
+            try:
+                from model_backend import tensorize_model
+                return tensorize_model(fn)
+            except ImportError:
+                pass
+
         if effective_backend in ("auto", "triton"):
             try:
                 from triton_backend import tensorize_triton
                 if effective_backend == "auto":
-                    # Check if function has for-loops (Triton benefits most)
                     src = inspect.getsource(fn)
                     has_loop = 'for ' in src and 'range(' in src
                     if has_loop:
@@ -107,7 +113,7 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
                 else:
                     return tensorize_triton(fn)
             except ImportError:
-                pass  # fall through to PyTorch backend
+                pass
 
         source = inspect.getsource(fn)
         source = textwrap.dedent(source)
