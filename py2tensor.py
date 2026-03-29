@@ -22,6 +22,64 @@ import inspect
 import textwrap
 import torch
 import types
+import time
+
+
+def explain(fn):
+    """Show the generated GPU tensor code for a @tensorize'd function."""
+    if hasattr(fn, '_tensor_source'):
+        print(f"Original: {fn.__name__}")
+        print(f"Generated GPU code:")
+        print(fn._tensor_source)
+    else:
+        print(f"{fn.__name__} is not tensorized. Use @tensorize first.")
+
+
+def benchmark(fn, *sample_args, n=10_000_000, rounds=10):
+    """Benchmark a @tensorize'd function: CPU scalar vs GPU batched."""
+    if not hasattr(fn, '_original'):
+        print("Function not tensorized. Use @tensorize first.")
+        return
+
+    # CPU scalar
+    scalar_args = [float(a) if isinstance(a, (int, float)) else a for a in sample_args]
+    t0 = time.time()
+    n_cpu = min(n, 50000)
+    for _ in range(n_cpu):
+        fn._original(*scalar_args)
+    cpu_time = time.time() - t0
+    cpu_rate = n_cpu / cpu_time
+
+    # GPU batched
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    gpu_args = []
+    for a in sample_args:
+        if isinstance(a, (int, float)):
+            gpu_args.append(torch.full((n,), float(a), device=device))
+        elif isinstance(a, torch.Tensor):
+            gpu_args.append(a.expand(n) if a.dim() == 0 else a)
+        else:
+            gpu_args.append(a)
+
+    # Warmup
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    fn(*gpu_args)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+
+    t0 = time.time()
+    for _ in range(rounds):
+        fn(*gpu_args)
+    torch.cuda.synchronize() if device.type == 'cuda' else None
+    gpu_time = (time.time() - t0) / rounds
+    gpu_rate = n / max(gpu_time, 1e-12)
+
+    speedup = gpu_rate / cpu_rate
+
+    print(f"Benchmark: {fn.__name__}")
+    print(f"  CPU scalar:  {cpu_rate/1e6:>8.1f}M calls/s")
+    print(f"  GPU batched: {gpu_rate/1e6:>8.0f}M elem/s  ({n/1e6:.0f}M elements)")
+    print(f"  Speedup:     {speedup:>8.0f}x")
+    return {"cpu_rate": cpu_rate, "gpu_rate": gpu_rate, "speedup": speedup}
 
 
 def tensorize(fn=None, lookup_tables=None):
