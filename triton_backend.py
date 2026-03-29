@@ -45,7 +45,34 @@ class TritonCodeGen:
             target = node.target.id
             op = self.visit_op(node.op)
             return f"{target} = {target} {op} {self.visit_expr(node.value)}"
+        elif isinstance(node, ast.For):
+            return self.visit_for(node)
         return ""
+
+    def visit_for(self, node):
+        """Unroll for i in range(N) into repeated statements."""
+        if (isinstance(node.iter, ast.Call) and isinstance(node.iter.func, ast.Name)
+            and node.iter.func.id == 'range'):
+            args = node.iter.args
+            start, stop, step = 0, None, 1
+            if len(args) == 1 and isinstance(args[0], ast.Constant):
+                stop = args[0].value
+            elif len(args) >= 2 and isinstance(args[0], ast.Constant) and isinstance(args[1], ast.Constant):
+                start, stop = args[0].value, args[1].value
+                if len(args) == 3 and isinstance(args[2], ast.Constant):
+                    step = args[2].value
+            if stop is not None and abs(stop - start) <= 64:
+                var = node.target.id if isinstance(node.target, ast.Name) else None
+                lines = []
+                for i in range(start, stop, step):
+                    for stmt in node.body:
+                        code = self.visit_stmt(stmt)
+                        if var and var in code:
+                            import re
+                            code = re.sub(r'\b' + re.escape(var) + r'\b', str(i), code)
+                        lines.append(code)
+                return '\n'.join(lines)  # no extra indent
+        return "# unsupported for loop"
 
     def visit_if(self, node):
         cond = self.visit_expr(node.test)
@@ -150,14 +177,17 @@ def tensorize_triton(fn):
     param_ptrs = ', '.join(f'{p}_ptr' for p in params)
     loads = '\n    '.join(f'{p} = tl.load({p}_ptr + offsets, mask=mask, other=0.0)' for p in params)
 
-    kernel_src = f"""
-@triton.jit
+    # Indent body code to 4 spaces (inside function)
+    body_lines = body_code.strip().split('\n')
+    indented_body = '\n'.join('    ' + line.strip() for line in body_lines if line.strip())
+
+    kernel_src = f"""@triton.jit
 def _fused_kernel({param_ptrs}, output_ptr, n: tl.constexpr, BLOCK: tl.constexpr):
     pid = tl.program_id(0)
     offsets = pid * BLOCK + tl.arange(0, BLOCK)
     mask = offsets < n
     {loads}
-    {body_code}
+{indented_body}
     tl.store(output_ptr + offsets, result, mask=mask)
 """
     # Triton needs source code on disk (inspect.getsource requirement)
