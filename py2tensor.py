@@ -455,6 +455,12 @@ class TensorTransformer(ast.NodeTransformer):
             )
         return node
 
+    def visit_Return(self, node):
+        """Handle return statements - especially tuples (multiple returns)."""
+        self.generic_visit(node)
+        # Tuple returns are already handled by Python's AST
+        return node
+
     def visit_IfExp(self, node):
         """Ternary: val_true if cond else val_false -> torch.where(cond, true, false)"""
         self.generic_visit(node)
