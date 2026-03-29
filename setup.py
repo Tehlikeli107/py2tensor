@@ -1,21 +1,22 @@
-from setuptools import setup
+from setuptools import setup, find_packages
 
 setup(
     name="py2tensor",
-    version="0.14.0",
-    description="Convert any Python function to GPU tensor operation. No training, exact results, 8000x speedup.",
+    version="2.0.0",
+    description="Convert any Python function to GPU. No training, exact results, 3959x speedup.",
     long_description=open("README.md").read(),
     long_description_content_type="text/markdown",
     author="Tehlikeli107",
     url="https://github.com/Tehlikeli107/py2tensor",
-    py_modules=["py2tensor"],
+    packages=find_packages(),
     install_requires=["torch>=2.0"],
     extras_require={
         "numpy": ["numpy"],
         "pandas": ["pandas"],
+        "triton": ["triton>=3.0"],
     },
     python_requires=">=3.10",
-    keywords="gpu cuda tensor pytorch accelerate jit compile parallel",
+    keywords="gpu cuda tensor pytorch accelerate parallel compiler",
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Science/Research",

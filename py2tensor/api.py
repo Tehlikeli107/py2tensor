@@ -20,24 +20,20 @@ Usage:
     @gpu.model       # nn.Module (save/load/compose)
     @gpu.all         # auto dict/list/string conversion
 """
-import sys
-import os
-sys.path.insert(0, os.path.dirname(__file__))
-
-from py2tensor import tensorize, explain, benchmark, profile
+from .core import tensorize, explain, benchmark, profile
 
 try:
-    from triton_backend import tensorize_triton
+    from .triton import tensorize_triton
 except ImportError:
     tensorize_triton = None
 
 try:
-    from pure_model import build_pure_model
+    from .pure import build_pure_model
 except ImportError:
     build_pure_model = None
 
 try:
-    from tensorize_all import tensorize_all
+    from .all import tensorize_all
 except ImportError:
     tensorize_all = None
 

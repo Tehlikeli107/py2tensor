@@ -168,7 +168,7 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
         effective_backend = backend
         if effective_backend == "pure":
             try:
-                from pure_model import build_pure_model
+                from .pure import build_pure_model
                 mod = build_pure_model(fn)
                 if compile:
                     mod = torch.compile(mod)
@@ -178,7 +178,7 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
 
         if effective_backend == "model":
             try:
-                from model_backend import tensorize_model
+                from .model import tensorize_model
                 mod = tensorize_model(fn)
                 if compile:
                     mod = torch.compile(mod)
@@ -188,7 +188,7 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
 
         if effective_backend in ("auto", "triton"):
             try:
-                from triton_backend import tensorize_triton
+                from .triton import tensorize_triton
                 if effective_backend == "auto":
                     src = inspect.getsource(fn)
                     has_loop = 'for ' in src and 'range(' in src
