@@ -82,7 +82,9 @@ def benchmark(fn, *sample_args, n=10_000_000, rounds=10):
     return {"cpu_rate": cpu_rate, "gpu_rate": gpu_rate, "speedup": speedup}
 
 
-def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True):
+_builtin_compile = compile  # save reference before shadowing
+
+def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=False):
     """Decorator: converts scalar Python function to batched GPU tensor function.
 
     Args:
@@ -145,7 +147,7 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True):
                 else:
                     namespace[k] = v
 
-        compiled = compile(wrapper_code, f'<py2tensor:{func_name}>', 'exec')
+        compiled = _builtin_compile(wrapper_code, f'<py2tensor:{func_name}>', 'exec')
         run_module(compiled, namespace)
         gpu_fn = namespace[func_name]
 
@@ -180,7 +182,8 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True):
                                     namespace[k] = namespace[k].to(dev)
 
                 try:
-                    return gpu_fn(*converted, **kwargs)
+                    target_fn = compiled_fn if compiled_fn else gpu_fn
+                    return target_fn(*converted, **kwargs)
                 except Exception as e:
                     if fallback:
                         # Fallback to CPU scalar
@@ -189,11 +192,14 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True):
 
             return fn(*args, **kwargs)
 
-        # Try torch.compile for extra speed
+        # torch.compile for kernel fusion (optional, 2-10x extra speed)
         compiled_fn = None
-        try:
-            compiled_fn = torch.compile(gpu_fn)
-        except Exception:
+        if compile:
+            try:
+                compiled_fn = torch.compile(gpu_fn)
+            except Exception:
+                compiled_fn = gpu_fn
+        else:
             compiled_fn = gpu_fn
 
         wrapper._original = fn
