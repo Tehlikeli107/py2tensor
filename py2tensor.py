@@ -84,7 +84,7 @@ def benchmark(fn, *sample_args, n=10_000_000, rounds=10):
 
 _builtin_compile = compile  # save reference before shadowing
 
-def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=False):
+def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=False, backend="pytorch"):
     """Decorator: converts scalar Python function to batched GPU tensor function.
 
     Args:
@@ -93,6 +93,22 @@ def tensorize(fn=None, lookup_tables=None, dtype=None, fallback=True, compile=Fa
                        These become torch tensors accessible inside the function.
     """
     def decorator(fn):
+        # Auto/Triton backend routing
+        effective_backend = backend
+        if effective_backend in ("auto", "triton"):
+            try:
+                from triton_backend import tensorize_triton
+                if effective_backend == "auto":
+                    # Check if function has for-loops (Triton benefits most)
+                    src = inspect.getsource(fn)
+                    has_loop = 'for ' in src and 'range(' in src
+                    if has_loop:
+                        return tensorize_triton(fn)
+                else:
+                    return tensorize_triton(fn)
+            except ImportError:
+                pass  # fall through to PyTorch backend
+
         source = inspect.getsource(fn)
         source = textwrap.dedent(source)
 
