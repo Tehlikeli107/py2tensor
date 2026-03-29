@@ -84,8 +84,16 @@ def tensorize(fn=None, lookup_tables=None):
                 return gpu_fn(*args, **kwargs)
             return fn(*args, **kwargs)
 
+        # Try torch.compile for extra speed
+        compiled_fn = None
+        try:
+            compiled_fn = torch.compile(gpu_fn)
+        except Exception:
+            compiled_fn = gpu_fn
+
         wrapper._original = fn
         wrapper._gpu = gpu_fn
+        wrapper._compiled = compiled_fn
         wrapper._tensor_source = new_source
         wrapper.__name__ = func_name
         return wrapper
