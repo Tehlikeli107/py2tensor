@@ -102,6 +102,18 @@ def run_module(code_obj, namespace):
     types.FunctionType(code_obj, namespace)()
 
 
+class _NameReplacer(ast.NodeTransformer):
+    """Replace a specific Name node (exact match) with a Constant."""
+    def __init__(self, name, value):
+        self.name = name
+        self.value = value
+
+    def visit_Name(self, node):
+        if node.id == self.name:
+            return ast.Constant(value=self.value)
+        return node
+
+
 class TensorTransformer(ast.NodeTransformer):
     """AST transformer: converts Python scalar ops to tensor ops."""
 
@@ -126,30 +138,50 @@ class TensorTransformer(ast.NodeTransformer):
                 keywords=[]
             ))
 
-        # if/else with single assignment to same variable
+        # if/else with single assignment in each branch
         if (len(node.body) == 1 and len(node.orelse) == 1 and
             isinstance(node.body[0], ast.Assign) and
             isinstance(node.orelse[0], ast.Assign)):
 
             t1 = node.body[0].targets[0]
             t2 = node.orelse[0].targets[0]
-            if isinstance(t1, ast.Name) and isinstance(t2, ast.Name) and t1.id == t2.id:
-                cond = node.test
-                true_val = node.body[0].value
-                false_val = node.orelse[0].value
+            cond = node.test
 
-                return ast.Assign(
-                    targets=[ast.Name(id=t1.id, ctx=ast.Store())],
-                    value=ast.Call(
-                        func=ast.Attribute(
-                            value=ast.Name(id='torch', ctx=ast.Load()),
-                            attr='where', ctx=ast.Load()),
-                        args=[cond, true_val, false_val],
-                        keywords=[]
+            if isinstance(t1, ast.Name) and isinstance(t2, ast.Name):
+                if t1.id == t2.id:
+                    # Same variable: simple torch.where
+                    return ast.Assign(
+                        targets=[ast.Name(id=t1.id, ctx=ast.Store())],
+                        value=self._make_where(cond, node.body[0].value, node.orelse[0].value)
                     )
-                )
+                else:
+                    # Different variables: both need conditional update
+                    # if cond: a = X else: b = Y
+                    # -> a = torch.where(cond, X, a)
+                    #    b = torch.where(cond, b, Y)
+                    return [
+                        ast.Assign(
+                            targets=[ast.Name(id=t1.id, ctx=ast.Store())],
+                            value=self._make_where(cond, node.body[0].value,
+                                                   ast.Name(id=t1.id, ctx=ast.Load()))
+                        ),
+                        ast.Assign(
+                            targets=[ast.Name(id=t2.id, ctx=ast.Store())],
+                            value=self._make_where(cond, ast.Name(id=t2.id, ctx=ast.Load()),
+                                                   node.orelse[0].value)
+                        ),
+                    ]
 
         return node
+
+    def _make_where(self, cond, true_val, false_val):
+        return ast.Call(
+            func=ast.Attribute(
+                value=ast.Name(id='torch', ctx=ast.Load()),
+                attr='where', ctx=ast.Load()),
+            args=[cond, true_val, false_val],
+            keywords=[]
+        )
 
     def visit_Call(self, node):
         """Convert built-in functions to torch equivalents."""
@@ -172,6 +204,7 @@ class TensorTransformer(ast.NodeTransformer):
 
     def visit_For(self, node):
         """Convert for i in range(N) to unrolled statements."""
+        # First transform body (converts if/else inside loop to torch.where)
         self.generic_visit(node)
 
         if (isinstance(node.iter, ast.Call) and
@@ -191,15 +224,19 @@ class TensorTransformer(ast.NodeTransformer):
                 var_name = node.target.id if isinstance(node.target, ast.Name) else None
                 if var_name:
                     unrolled = []
+                    import copy
                     for i in range(start, stop, step):
                         for stmt in node.body:
-                            src = ast.unparse(stmt)
-                            src = src.replace(var_name, str(i))
-                            try:
-                                new_stmts = ast.parse(src).body
-                                unrolled.extend(new_stmts)
-                            except SyntaxError:
-                                return node
+                            new_stmt = copy.deepcopy(stmt)
+                            replacer = _NameReplacer(var_name, i)
+                            new_stmt = replacer.visit(new_stmt)
+                            # Transform the unrolled statement (convert if→where etc.)
+                            new_stmt = self.visit(new_stmt)
+                            ast.fix_missing_locations(new_stmt)
+                            if isinstance(new_stmt, list):
+                                unrolled.extend(new_stmt)
+                            else:
+                                unrolled.append(new_stmt)
                     return unrolled
 
         return node
