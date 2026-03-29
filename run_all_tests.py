@@ -14,6 +14,8 @@ test_files = [
     "tests_multiblock.py",
     "test_multistatement.py",
     "test_realworld.py",
+    "test_while_minmax.py",
+    "test_profile.py",
 ]
 
 print("=" * 60)
