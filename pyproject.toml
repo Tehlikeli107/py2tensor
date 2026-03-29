@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=64", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "py2tensor"
+version = "0.14.0"
+description = "Convert any Python function to GPU tensor operation. No training, exact results, 8000x speedup."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+keywords = ["gpu", "cuda", "tensor", "pytorch", "accelerate", "jit", "compile", "parallel"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Intended Audience :: Developers",
+    "Topic :: Scientific/Engineering",
+    "Topic :: Software Development :: Compilers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+]
+dependencies = ["torch>=2.0"]
+
+[project.optional-dependencies]
+numpy = ["numpy"]
+pandas = ["pandas"]
+
+[project.urls]
+Homepage = "https://github.com/Tehlikeli107/py2tensor"
+Repository = "https://github.com/Tehlikeli107/py2tensor"
