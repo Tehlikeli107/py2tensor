@@ -12,6 +12,8 @@ test_files = [
     "tests_numpy_dtype.py",
     "tests_advanced2.py",
     "tests_multiblock.py",
+    "test_multistatement.py",
+    "test_realworld.py",
 ]
 
 print("=" * 60)
